@@ -1,0 +1,579 @@
+---
+title: "PCA and Clustering"
+author: "Janik Lasse Dunker"
+date: "WS 2020/21"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    code_folding: show
+    highlight: tango
+    css: styles.css
+    number_sections: yes
+---
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r}
+# import libraries
+library(ggplot2)
+library(tidyverse)  
+library(factoextra)
+library(sf)
+library(magrittr)
+library(viridis)
+library(cluster)
+```
+
+# Data
+
+
+Load the file mathstats-miniproject1.Rdata. It contains two objects: `df` is a data frame of 138 countries with information on 10 variables (see short descriptions below). `sf` is a simple features object that contains the geometries of the countries' borders.
+
+* `life_expectancy`: average number of years a newborn child is expected to live
+* `HDI`: index that ranks countries by level of human development in terms of health, education, and living standard
+* `income_person`: GDP per capita
+* `gini_coefficient`: income inequality - a higher number means more inequality.
+* `water`: percentage of people using at least basic water services.
+* `sanitation`: percentage of people using at least basic sanitation services.
+* `calories`: measures the energy content of the food.
+* `freedom`: index of political rights and civil liberties, on a range from 1
+(most free) to 7 (least free)
+* `democracy`: index of quality of democracies between 0 and 100
+* `corruption`: score of perceptions of corruption by Transparency International.
+From 0 (highly corrupt) to 100 (very clean).
+* `broadband`: fixed subscriptions to high-speed access to the public Internet
+* `internet_users`: internet users in percentage of population
+
+
+
+First off we load the data:
+```{r}
+load("mathstats_miniproject_1.Rdata")
+```
+
+
+# Analysis
+
+
+<div class=task>
+1\. Check whether you need to preprocess the data before carrying out clustering and principal component analysis.
+</div>
+
+
+<div class=answer>
+First of all we discover the data by skim:
+</div>
+```{r}
+skimr::skim(df)
+```
+<div class=answer>
+As we can see the dataset consists of various variables with different units: </br>
+life_expectancy: years </br>
+HDI is the Human Development Index: normalized value (0-1) </br>
+income_person: presumably in us-dollar </br>
+gini_coefficient: normalized value (0-100) </br>
+water: normalized value (0-100) </br>
+sanitation: normalized value (0-100) </br>
+calories: kcal </br>
+freedom: score (1 to 7) </br>
+democracy: normalized value (0-100) </br>
+corruption: normalized value (0-100) </br>
+broadband: normalized value (0-100) </br>
+internet_users: normalized value (0-100) </br></br>
+
+For this a standardization will be necessary. </br>
+The question is if a min-max or z-score standardization is more appropriate.
+For discovering this we standardize by min-max and z-score and make a boxplot to
+check which standardization is the better fit:
+```{r}
+
+df_scaled <- df %>%
+  rownames_to_column('country') %>% # for preserving rownames
+  mutate_at(vars(-c(iso_alpha, country)), scale) %>%
+  column_to_rownames('country') # for preserving rownames
+
+
+# applying min-max transformation on non-normalized data
+df_normalized <- df %>%
+  rownames_to_column('country') %>% # for preserving rownames
+  mutate_at(
+    vars(c('life_expectancy',
+                   'income_person',
+                   'calories')),
+    funs((.-min(.))/(max(.)-min(.))*100)) %>%
+  column_to_rownames('country') # for preserving rownames
+
+
+# freedom is a special case
+# as we know that the max value is 1 and min value is 7 we apply the min-max 
+# normalization, invert the scale by inverted_value = (1-normalized_value)
+# and build a percental score by multiplying by 100
+df_normalized %<>% 
+  rownames_to_column('country') %>% # for preserving rownames
+  mutate(freedom = ((1-(freedom-1)/(7-1))) * 100) %>%
+  column_to_rownames('country') # for preserving rownames
+
+# now we have to mutate the decimal values to percental values
+df_normalized %<>% 
+  rownames_to_column('country') %>% # for preserving rownames
+  mutate(HDI = HDI*100) %>%
+  column_to_rownames('country') # for preserving rownames
+
+
+
+df_normalized_comp <- df_normalized %>% mutate(standardization = 'min-max')
+df_scaled_comp <- df_scaled %>% mutate(standardization = 'z-score')
+
+
+df_comp <- rbind(df_normalized_comp, df_scaled_comp)
+
+
+df_comp %>%
+  
+  select(-c('iso_alpha')) %>%
+  
+  pivot_longer(cols=-c(standardization),
+               values_to='values',
+               names_to='categories') %>% 
+  
+  ggplot(aes(x=categories, y=values)) +
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(. ~ standardization, scales='free_x')
+
+```
+
+As we can see in the boxplot above min-max would deter the variance
+in life expectancy, income_person and calories. So we will use the z-score
+standardization.
+
+</div>
+<div class=task>
+2\. What are the 5 most similar and the 5 most dissimilar countries of Germany in terms of the Euclidean distance
+</div>
+
+<div class=answer>
+For solving this we first calculate the Euclidean distance of the countries
+with each other:
+</div>
+```{r}
+# calculate the euclidean distances
+euclidean_distance_matrix <- df_scaled %>%
+  select(-c('iso_alpha')) %>% # exclude iso_alpha since not required for distances
+  dist(method = "euclidean", diag = FALSE, upper = FALSE) %>% # calc euclidean distance (L2)
+  as.matrix() %>% # change datatype to matrix
+  data.frame()
+```
+
+<div class=answer>
+The 5 most similar countries are following:
+</div>
+```{r}
+# get the most similar countries
+euclidean_distance_matrix %>%
+  select('Germany') %>%
+  arrange(Germany) %>%
+  head(6) # 6, since germany was pretty obvious ;)
+```
+
+<div class=answer>
+The 5 least similar countries are following
+</div>
+```{r}
+# get the least similar countries
+euclidean_distance_matrix %>%
+  select('Germany') %>%
+  arrange(-Germany) %>%
+  head(5)
+
+```
+
+
+<div class=task>
+3\. Carry out a hierarchical clustering analysis using the Euclidean distance measure. Experiment with different linkage methods and different numbers of clusters such that your preferred approach is as informative as possible. (And remember that there is no objective truth.) In order to evaluate how many clusters are suitable, use the following 2 approaches.
+
+- Plot the dendrogramme and inspect visually 
+- Calculate average values of all variables per cluster, and analyze differences between clusters
+
+Briefly justify your choices of the linkage method and the number of clusters.
+</div>
+
+<div class=answer>
+To decide for a linkage method, we try out different linkage methods to evaluate
+which is the most suiting for this experiment:
+
+```{r}
+my_dend <- function(method = 'complete',
+                    clusters,
+                    type = 'rectangle',
+                    labels = FALSE) {     # Building a function to execute hierarchical clustering and the dendogram visualization in one step.
+  
+  
+  result <- hcut(                           
+    x =   df_scaled,  # standardized data frame
+    k = clusters,                           # Number of clusters
+    hc_func = "agnes",                      # Agglomerative clustering          
+    hc_metric = "euclidian",                # Euclidean distance
+    hc_method = method,                     # Linkage method
+    stand = FALSE)                          # since data is already standardized
+  
+  fviz_dend(
+    result,
+    type = type,
+    horiz = FALSE, 
+    cex = 0.6,
+    show_labels = labels,
+    repel = TRUE,
+    main = glue::glue("Method: {method}, Clusters: {clusters}"))
+}
+
+list("complete", "single", "average") %>%
+  map(my_dend, clusters = 4) %>%
+  gridExtra::grid.arrange(grobs = ., top =  "Comparison of Linkage Methods")
+
+```
+
+The plot directly shows that the single-method creates a single huge cluster,
+which is undesirable. So the single-method will not be used.
+The average-method creates three bigger clusters and one really small, so that
+the average-method is also seen as undesirable.
+In conclusion the complete method will be used for further investigations.
+
+For determining the number of clusters, we plot a dendrogram for 7 clusters:
+
+```{r}
+# let's set the seed with a magic number
+set.seed(42)
+result <- factoextra::hcut(x = df_scaled, 
+                 hc_func = "agnes",         # Clustering function: agnes, diana, hclust          
+                 hc_metric = "euclidean",   # Distance: euclidean, manhattan, pearson, ...
+                 hc_method = "complete",    # Agglomeration method: complete, single, ... (linkage)
+                 k = 7,                     # Number of clusters
+                 stand = FALSE)              # Standardize before clustering
+
+fviz_dend(result, type = 'circular', cex = 0.6, show_labels = TRUE, repel = TRUE)
+
+df_scaled$cluster <- as.character(result$cluster) # The cluster assignment is stored in the results object
+```
+
+The average values of all variables per cluster has been calculated and displayed as
+a heatmap for further analysis of the differences between the clusters:
+
+```{r}
+cluster_means <- df_scaled %>% 
+  group_by(cluster) %>% 
+  summarise(across(everything(), mean))
+
+cluster_means %>%
+  pivot_longer(cols = -c(iso_alpha, cluster), names_to = 'variable', values_to = 'mean') %>%
+  ggplot(aes(cluster, variable, fill= mean)) +
+  scale_fill_viridis(discrete=FALSE) +
+  geom_tile()
+```
+
+
+A distance matrix for the mean values of each cluster could be used too, but will
+not be considered:
+```{r}
+# calculate the euclidean distances
+#cluster_means %>%
+#  dist(method = "euclidean", diag = FALSE, upper = FALSE) %>% # calc euclidean distance (L2)
+#  as.matrix() %>% # change datatype to matrix
+#  data.frame
+
+```
+
+As we can see in the heatmap the clusters 2 and 3 are already quite similar.
+Adding one more cluster would introduce one more cluster quite similar to another cluster,
+so more clusters would be inappropriate.
+
+At the same time cluster 7 consisting of Kuweit and United Arabic Emirates has special
+characteristics with a very high income per capita and a very low value in democracy
+at the same time. If we would use 6 clusters the cluster 7 would be part of the
+developed countries, which wouldn't really fit.
+
+Since it would be for the two reasons mentioned before inappropriate to increase
+or decrease the number of clusters we stick to the seven clusters.
+</div>
+
+<div class=task>
+4\.Describe in words what characterises your clusters
+</div>
+<div class=answer>
+Cluster 1 consists of countries which have been and are politically unstable
+          such as the Central African states and Afghanistan.
+
+Cluster 2 consists of countries which most have been or still are socialistic.
+
+Cluster 3 consists of the Latin American countries as well as south east European
+          and south-east Asian countries.
+
+Cluster 4 consists of most of the 'developed' countries.
+
+cluster 5 consists of developing countries such as the African countries from the
+          coast, India and Mongolia. Those are more stable than the countries
+          from cluster 1.
+          
+Cluster 6 consists of the South African countries and Suriname.
+
+Cluster 7 consists of United Arabic Emirates and Kuwait, which are two Arabic states
+          which are financially very strong due to oil resources and low in
+          democracy and freedom.
+</div>
+
+<div class=task>
+5\. (Bonus excercise) Create a choropleth map of the world, where each country is colored according to its cluster. Hint: while the geo data is an `sf` object (which you need for creating a map), this property might get lost in the join. If this is the case, then convert the resulting object (a data frame) into an `sf` object via `sf::st_as_sf`.
+</div>
+<div class=answer>
+```{r}
+data(World, package = "tmap")  # load data from tmap package
+world <- World                 # rename
+
+df_scaled %>%
+  select(c('iso_alpha','cluster')) %>%
+  full_join(world, by = c('iso_alpha' = 'iso_a3')) %>%
+  sf::st_as_sf() %>%
+  ggplot() +
+  geom_sf(aes(fill = cluster)) +
+  scale_fill_discrete(na.translate=FALSE)
+```
+</div>
+
+<div class=task>
+6\.Carry out a principal component analysis 
+</div>
+
+<div class=answer>
+```{r}
+
+pca <- df_scaled %>%
+  select(-c(iso_alpha, cluster)) %>%
+  prcomp()
+
+```
+</div>
+
+<div class=task>
+7\. How many principal components are needed to capture 90% of the variance in the data?
+</div>
+
+<div class=answer>
+There are different ways to determine the required PCs to capture 90% of the
+variance in the data.
+
+One is by using the summary function:
+</div>
+```{r}
+summary(pca)
+```
+<div class=answer>
+Where in the row 'Cumulative Proportion' can bee found that 4 PCs are needed.
+
+
+Another is by calculating the equivalent proportion of variance per PC and add those
+until the 90% threshold is crossed:
+</div>
+```{r}
+# calculate proportion of variance per principal component
+PoV <- pca$sdev^2/sum(pca$sdev^2)
+
+# calculate needed principal components
+
+sum_pov <- 0
+i <- 1
+
+while (sum_pov < 0.9){
+  sum_pov <- sum_pov + PoV[i]
+  i <- i + 1
+}
+
+print(paste(as.character(i-1),'principal components are needed to capture 90% of the variance in the data'))
+
+```
+<div class=answer>
+Also one is to do it visually (which is the worst):
+```{r}
+fviz_eig(pca)
+```
+</div>
+
+<div class=task>
+8\. Show a biplot. Hint: if the plot gets too crowded, then you may reduce the number of countries via the option `select.ind = list(name = c("France", "Germany")) or similar.
+</div>
+<div class=answer>
+```{r}
+
+fviz_pca_biplot(pca, repel = TRUE, select.ind = list(name = sample(rownames(df_scaled), 40)))
+
+```
+</div>
+
+<div class=task>
+Interpret the output of the biplot by means of some example countries and variables: 
+</div>
+
+<div class=task>
+- What do the coordinates of the countries tell you? And what does it mean if countries are far from each other?
+</div>
+
+<div class=answer>
+The coordinates of the countries are the principal component scores of the countries for the first two principal components.
+So that those explain the two most important characteristics of the countries.
+If countries are far from each other they differ in characteristics.
+The more they are far from each other the more they differ.
+</div>
+
+<div class=task>
+- What do the coordinates of the arrow tips of variables tell you? * And what the arrow length?
+</div>
+
+<div class=answer>
+The coordinates of the arrow tips are the correlations of the first two PCs with the original variables.
+The length of the arrow explains how well the corresponding original variable is represented by the first two PCs.
+Normally a length of 1 would mean a perfect representation of the original variable
+by the first two PCs, in this case it seems that the lengths of the arrows are scaled,
+so it doesn't apply for this case (that's maybe for visualization reasons in the
+function).
+</div>
+
+<div class=task>
+- What is the interpretation if arrows point in a similar direction?
+</div>
+
+<div class=answer>
+If the arrows point into a similar direction it means that the corresponding variables
+are similar in the correlation to the first two PCs, so that those variables are
+also correlating with each other.
+</div>
+
+<div class=task>
+- What is the interpretation if an arrow points in the direction of a country?
+</div>
+
+<div class=answer>
+For answering this question further investigation has to been taken.
+For this we took some countries where the arrow pointed into the direction
+of the countries. The country Peru has been used as a counter example, since it is
+rather neutral in respect to the arrows (close to 0).
+
+Now we plot the first 4 PCs as two biplots (since those cover 90% of the data's variance,
+the other PCs will not be looked at):
+```{r}
+
+fviz_pca_biplot(pca, axes = c(1,2), repel = TRUE, select.ind = list(name = c('Peru',
+                             'South Africa',
+                             'Turkmenistan')))
+
+fviz_pca_biplot(pca, axes = c(3,4), repel = TRUE, select.ind = list(name = c('Peru',
+                             'South Africa',
+                             'Turkmenistan')))
+```
+
+First of all we want to recall what's behind the biplots. The PCs are just a new
+coordinate system. In the biplot the PCs are the x- and y- dimensions. The arrows
+in the biplot represent the original axis seen through the 2-dimensional coordinate
+system of the currently used PCs.
+
+Normally the arrow is scaled so that a length would 1 would mean that the
+variance of the corresponding original axis is fully represented by the PCs of
+the biplot. In this case it's not that way as explained before.
+Nonetheless the longer the arrow the more the PCs represent the original axis.
+
+So if an arrow is long in a biplot and points into the direction of a data point,
+the data point will have a high value for the corresponding original axis.
+
+We take as an example Turkmenistan. Here in the biplot of PC1 and PC2 the arrow of
+freedom points almost directly in the direction of the point and the arrow of democracy
+points in the almost contrary direction. Both arrows are long for PC1 and PC2, 
+so we would assume that Turkmenistan will have a highly positive value for freedom
+and a highly negative value for democracy.
+
+Another example would be South Africa with the original axis gini_coefficient.
+In the two biplots for PC1/PC2 and PC3/PC4 the arrows for the gini_coefficient
+point in the direction of South Africa and are long.
+So we would assume that South Africa will have a high value for the gini_coefficient.
+
+As the counterexample we got Peru which is in both biplots rather neutral (near 0).
+So we would assume that Peru will have values near the overall mean values.
+
+To test the hypothesis we plot the countries values in comparison to the overall
+distribution of the equivalent variable:
+```{r}
+
+line_plot_data <- df_scaled %>%
+  filter(row.names(.) %in% c('Peru',
+                             'South Africa',
+                             'Turkmenistan')) %>%
+  select(-c('iso_alpha','cluster')) %>%
+  rownames_to_column('country') %>%
+  pivot_longer(cols=-c(country), values_to='values', names_to='categories')
+
+require(reshape2)
+df_scaled %>%
+  select(-c('iso_alpha','cluster')) %>%
+  melt() %>%
+  ggplot(aes(x=variable, y=value)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_line(data = line_plot_data, aes(x=categories, y=values, group=country, color=country))+
+  geom_point(data = line_plot_data, aes(x=categories, y=values, color=country))
+
+```
+
+Looking at the boxplot for freedom and democracy we can see that Turkmenistan
+has a especially highly positive value for freedom and a especially highly negative
+value for democracy in comparison to the overall data.
+
+As expected before, South Africa got a high value for the gini_coefficient.
+
+Furthermore Peru got values rather near to the overall mean values as expected.
+
+</div>
+
+<div class=task>
+9.\ (Bonus excerise) Visualize your clusters in a coordinate system with the principle components 1 mapped to the x-axis and the principle component 2 mapped to the y-axis.
+</div>
+<div class=answer>
+```{r}
+fviz_pca_ind(pca,
+             repel = TRUE,
+             geom.ind = 'text',
+             habillage = df_scaled$cluster,
+             select.ind = list(name = c('Chad',
+                                        'Zimbabwe',
+                                        'Angola',
+                                        'Afghanistan',
+                                        'Russia',
+                                        'China',
+                                        'Moldova',
+                                        'Lebanon',
+                                        'Costa Rica',
+                                        'Bolivia',
+                                        'Argentina',
+                                        'Paraguay',
+                                        'Norway',
+                                        'Croatia',
+                                        'Estonia',
+                                        'United Kingdom',
+                                        'Zambia',
+                                        'Gabon',
+                                        'Mongolia',
+                                        'Kenya',
+                                        'Namibia',
+                                        'Suriname',
+                                        'South Africa',
+                                        'Botswana',
+                                        'Kuwait',
+                                        'United Arab Emirates',
+                                        sample(rownames(df_scaled), 20)
+                                        )),
+             addEllipses = T)
+```
+</div>
